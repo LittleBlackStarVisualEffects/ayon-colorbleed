@@ -3,7 +3,7 @@ import platform
 import subprocess
 
 import ayon_api
-from ayon_core.pipeline import get_representation_path
+from ayon_core.pipeline import Anatomy, get_representation_path
 from ayon_core.addon import (
     AYONAddon,
     IPluginPaths,
@@ -74,14 +74,25 @@ class ColorbleedAddon(AYONAddon, IPluginPaths):
 
     def _get_entity_paths(self, project_name, entity_type, entity_ids):
         paths: "list[str]" = []
-        if entity_type == "version":
-            representations = ayon_api.get_representations(
-                project_name=project_name,
-                version_ids=entity_ids,
-            )
-            for representation in representations:
-                path = get_representation_path(representation)
-                paths.append(path)
+        if entity_type != "version":
+            return paths
+        anatomy = Anatomy(project_name)
+        representations = ayon_api.get_representations(
+            project_name=project_name,
+            version_ids=entity_ids,
+        )
+        for representation in representations:
+            try:
+                path = get_representation_path(
+                    project_name, representation, anatomy=anatomy
+                )
+            except Exception as exc:
+                print(
+                    f"Skipping representation '{representation['name']}':"
+                    f" {exc}"
+                )
+                continue
+            paths.append(str(path))
         return paths
 
     def _cli_run(
@@ -126,15 +137,24 @@ class ColorbleedAddon(AYONAddon, IPluginPaths):
     def _cli_show_in_explorer(
         self, project, entity_type, entity_ids
     ):
-        """Open paths in system explorer"""
+        """Open the folders of the given entities in the OS file browser"""
         paths = self._get_entity_paths(project, entity_type, entity_ids)
         folders = set()
         for path in paths:
-            if os.path.isfile(path):
+            if not os.path.isdir(path):
                 path = os.path.dirname(path)
-            folders.add(path)
+            folders.add(os.path.normpath(path))
 
-        for folder in folders:
+        if not folders:
+            raise RuntimeError("No published files found for this version.")
+
+        existing = sorted(f for f in folders if os.path.isdir(f))
+        if not existing:
+            raise RuntimeError(
+                "Folder not found on this machine (is the drive mounted?):\n"
+                + "\n".join(sorted(folders))
+            )
+        for folder in existing:
             self.open_in_explorer(folder)
     # endregion
 
@@ -154,12 +174,10 @@ class ColorbleedAddon(AYONAddon, IPluginPaths):
     def open_in_explorer(path: str):
         platform_name = platform.system().lower()
         if platform_name == "windows":
-            args = ["start", path]
+            os.startfile(path)
         elif platform_name == "darwin":
-            args = ["open", "-na", path]
+            subprocess.run(["open", path], check=True)
         elif platform_name == "linux":
-            args = ["xdg-open", path]
+            subprocess.Popen(["xdg-open", path])
         else:
             raise RuntimeError(f"Unknown platform {platform.system()}")
-        # Make sure path is converted correctly for 'os.system'
-        os.system(subprocess.list2cmdline(args))
